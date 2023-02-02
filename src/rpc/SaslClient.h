@@ -84,14 +84,7 @@ public:
 
     bool isComplete();
 
-    bool isPrivate();
-    bool isIntegrity();
-
-    std::string encode(const char *input, size_t input_len);
-    std::string decode(const char *input, size_t input_len, bool force=false);
-
 private:
-    int findPreferred(int possible);
     void initKerberos(const RpcSaslProto_SaslAuth & auth,
                       const std::string & principal);
     void initDigestMd5(const RpcSaslProto_SaslAuth & auth, const Token & token);
@@ -101,14 +94,7 @@ private:
     AESClient *aes;
     Gsasl * ctx;
     Gsasl_session * session;
-    bool changeLength;
     bool complete;
-    bool privacy;
-    bool integrity;
-    const RpcSaslProto_SaslAuth theAuth;
-    const Token theToken;
-    const std::string thePrincipal;
-    bool encryptedData;
 };
 
 }

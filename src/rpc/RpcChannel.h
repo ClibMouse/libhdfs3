@@ -260,7 +260,6 @@ private:
                    BufferedSocketReader * in, RpcClient & client);
 
 private:
-    bool saslComplete;
     atomic<int> refs;
     bool available;
     mutex readMut;

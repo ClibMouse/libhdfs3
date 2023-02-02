@@ -1,4 +1,4 @@
-/********************************************************************
+/*******************************************************************
  * Copyright (c) 2013 - 2014, Pivotal Inc.
  * All rights reserved.
  *
@@ -197,11 +197,8 @@ std::string AESClient::decode(const char *input, size_t input_len) {
 
 
 SaslClient::SaslClient(const RpcSaslProto_SaslAuth & auth, const Token & token,
-                       const std::string & principal, bool encryptedData, int protection) :
-     aes(NULL), ctx(NULL), session(NULL), changeLength(false), complete(false),
-     privacy(false), integrity(false),
-     theAuth(auth), theToken(token), thePrincipal(principal), encryptedData(encryptedData) ,
-       protection(protection) {
+                       const std::string & principal) :
+    complete(false) {
     int rc;
     ctx = NULL;
     RpcAuth method = RpcAuth(RpcAuth::ParseMethod(auth.method()));
@@ -232,25 +229,11 @@ SaslClient::~SaslClient() {
 
     if (session != NULL) {
         gsasl_finish(session);
-        session = NULL;
     }
 
     if (ctx != NULL) {
         gsasl_done(ctx);
-        ctx = NULL;
     }
-}
-
-bool SaslClient::needsLength() {
-    if (aes != NULL)
-        return false;
-    if ((!privacy && !integrity) || (!complete))
-        return false;
-    return true;
-}
-
-void SaslClient::setAes(AESClient *client) {
-    aes = client;
 }
 
 void SaslClient::initKerberos(const RpcSaslProto_SaslAuth & auth,
@@ -335,19 +318,7 @@ void SaslClient::initDigestMd5(const RpcSaslProto_SaslAuth & auth,
     gsasl_property_set_raw(session, GSASL_AUTHID, identifier.c_str(), identifier.length());
     gsasl_property_set(session, GSASL_HOSTNAME, auth.serverid().c_str());
     gsasl_property_set(session, GSASL_SERVICE, auth.protocol().c_str());
-    changeLength = true;
 }
-
-int SaslClient::findPreferred(int possible) {
-    if (possible & GSASL_QOP_AUTH)
-        return GSASL_QOP_AUTH;
-    if (possible & GSASL_QOP_AUTH_INT)
-        return GSASL_QOP_AUTH_INT;
-    if (possible & GSASL_QOP_AUTH_CONF)
-        return GSASL_QOP_AUTH_CONF;
-    return GSASL_QOP_AUTH;
-}
-
 
 std::string SaslClient::evaluateChallenge(const std::string & challenge) {
     int rc;
@@ -358,19 +329,10 @@ std::string SaslClient::evaluateChallenge(const std::string & challenge) {
 
     rc = gsasl_step(session, challenge.data(), challenge.size(), &output,
                     &outputSize);
-    RpcAuth method = RpcAuth(RpcAuth::ParseMethod(theAuth.method()));
-    if (rc == GSASL_GSSAPI_INIT_SEC_CONTEXT_ERROR && method.getMethod() == AuthMethod::KERBEROS) {
-        // Try again using principal instead
-        gsasl_finish(session);
-        initKerberos(theAuth, thePrincipal);
-        gsasl_property_set(session, GSASL_GSSAPI_DISPLAY_NAME, thePrincipal.c_str());
-        rc = gsasl_step(session, challenge.data(), challenge.size(), &output,
-                    &outputSize);
-    }
 
     if (rc == GSASL_NEEDS_MORE || rc == GSASL_OK) {
         retval.resize(outputSize);
-        memcpy((void *)retval.data(), output, outputSize);
+        memcpy(retval.data(), output, outputSize);
 
         if (output) {
             free(output);
@@ -385,111 +347,13 @@ std::string SaslClient::evaluateChallenge(const std::string & challenge) {
 
     if (rc == GSASL_OK) {
         complete = true;
-        int preferred = 0;
-        if (method.getMethod() == AuthMethod::TOKEN) {
-            const char *qop = gsasl_property_get (session, GSASL_QOP);
-            if (qop)
-                preferred = qop[0];
-        }
-        else if (challenge.length()) {
-            if (protection != 0)
-                preferred = protection;
-            else {
-                std::string decoded = decode(copied_challenge.c_str(), copied_challenge.length(), true);
-                int qop = (int)decoded.c_str()[0];
-                preferred = findPreferred(qop);
-            }
-        }
-
-        if (preferred & GSASL_QOP_AUTH_CONF) {
-            privacy = true;
-            integrity = true;
-        } else if (preferred & GSASL_QOP_AUTH_INT) {
-            integrity = true;
-        }
     }
 
     return retval;
 }
 
-std::string SaslClient::encode(const char *input, size_t input_len) {
-    std::string result;
-    if ((!privacy && !integrity) || (!complete)) {
-        result.resize(input_len);
-        memcpy((void *)result.data(), input, input_len);
-        return result;
-    }
-    if (aes)
-        return aes->encode(input, input_len);
-
-    char *output=NULL;
-    size_t output_len;
-    int rc = gsasl_encode(session, input, input_len, &output, &output_len);
-    if (rc != GSASL_OK) {
-        THROW(AccessControlException, "Failed to encode wrapped data: %s", gsasl_strerror(rc));
-    }
-    if (output_len) {
-        if (output_len > 4 && changeLength) {
-            result.resize(output_len-4);
-            memcpy((void *)result.data(), output+4, output_len-4);
-        } else {
-            result.resize(output_len);
-            memcpy((void *)result.data(), output, output_len);
-        }
-        free(output);
-    }
-    return result;
-}
-
-
-std::string  SaslClient::decode(const char *input, size_t input_len, bool force) {
-    std::string result;
-    if ((!privacy && !integrity && !force) || (!complete)) {
-        result.resize(input_len);
-        memcpy((void *)result.data(), input, input_len);
-        return result;
-    }
-    if (aes)
-        return aes->decode(input, input_len);
-
-    char *output=NULL;
-    size_t output_len;
-    std::string actualInput;
-    if (changeLength) {
-        actualInput.resize(input_len+4);
-        actualInput[0] = (input_len>> 24) & 0xFF;
-        actualInput[1] = (input_len >> 16) & 0xFF;
-        actualInput[2] = (input_len >> 8) & 0xFF;
-        actualInput[3] = input_len & 0xFF;
-        memcpy((void *)(actualInput.data() + 4), input, input_len);
-    } else {
-        actualInput.resize(input_len);
-        memcpy((void *)actualInput.data(), input, input_len);
-    }
-    int rc = gsasl_decode(session, actualInput.c_str(), actualInput.length(), &output, &output_len);
-    if (rc != GSASL_OK) {
-        THROW(AccessControlException, "Failed to decode wrapped data: %s", gsasl_strerror(rc));
-    }
-    if (output_len) {
-        result.resize(output_len);
-        memcpy((void *)result.data(), output, output_len);
-        free(output);
-    }
-
-    return result;
-}
-
-
 bool SaslClient::isComplete() {
     return complete;
-}
-
-bool SaslClient::isPrivate() {
-    return privacy;
-}
-
-bool SaslClient::isIntegrity() {
-    return integrity;
 }
 
 }
