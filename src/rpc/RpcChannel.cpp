@@ -144,10 +144,9 @@ const RpcSaslProto_SaslAuth * RpcChannelImpl::createSaslClient(
 
         THROW(AccessControlException, "%s", ss.str().c_str());
     }
-    const RpcConfig & conf = key.getConf();
+
     saslClient = shared_ptr<SaslClient>(
-                     new SaslClient(*auth, token, key.getAuth().getUser().getPrincipal(),
-                     false, conf.getProtection()));
+                     new SaslClient(*auth, token, key.getAuth().getUser().getPrincipal()));
     return auth;
 }
 
@@ -570,11 +569,6 @@ void RpcChannelImpl::checkOneResponse() {
             }
         }
     }
-}
-
-void RpcChannelImpl::Ping() {
-    unique_lock<mutex> lock(writeMut);
-    sendPing();
 }
 
 void RpcChannelImpl::sendPing() {
